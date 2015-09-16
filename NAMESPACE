@@ -1,0 +1,6 @@
+exportPattern("^[[:alpha:]]+")
+export(Hubble.LCDM)
+export(distance.LCDM)
+export(lira)
+import("coda")
+import("rjags")

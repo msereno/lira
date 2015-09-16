@@ -1,0 +1,11 @@
+Package: lira
+Type: Package
+Title: LInear Regression in Astronomy
+Version: 1.0
+Date: 2015-09-16
+Author: Mauro Sereno
+Maintainer: Mauro Sereno <mauro.sereno@unibo.it>
+Description: Package for Bayesian linear regression in astronomy. The method accounts for heteroscedastic errors in both the independent and the dependent variables, intrinsic scatters (in both variables), time evolution of slopes, normalization and scatters, Malmquist and Eddington bias, and break of linearity. The posterior distribution of the regression parameters  is sampled with a Gibbs method exploiting the JAGS library.
+License: GPL-2
+Depends: R (>= 2.14.0), coda, rjags
+SystemRequirements: JAGS (>= 3.0.0) (see http://mcmc-jags.sourceforge.net)
