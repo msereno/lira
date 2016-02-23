@@ -1,8 +1,8 @@
 lira <- function(
 x, y,
 delta.x, delta.y, covariance.xy,
-y.threshold, delta.y.threshold,
-z, z.ref=0.01, time.factor="Ez", distance=c("angular","luminosity"),
+y.threshold, delta.y.threshold, x.threshold, delta.x.threshold,
+z, z.ref=0.01, time.factor="Ez", distance=c("luminosity","angular"),
 Omega.M0=0.3, Omega.L0=0.7,
 alpha.YIZ="dunif", beta.YIZ="dt", gamma.YIZ="dt", delta.YIZ=0.0,
 sigma.YIZ.0="prec.dgamma", gamma.sigma.YIZ.Fz=0.0, gamma.sigma.YIZ.D=0.0,
@@ -15,13 +15,19 @@ sigma.Z.0="prec.dgamma", gamma.sigma.Z.Fz=0.0, gamma.sigma.Z.D=0.0,
 mu.Z.0.mixture="dunif", sigma.Z.0.mixture="prec.dgamma",
 Z.knee="dunif", l.knee=1e-04,
 beta.YIZ.knee="beta.YIZ", delta.YIZ.knee="delta.YIZ", sigma.YIZ.0.knee = "sigma.YIZ.0",
-Z.min = "-n.large", Z.max= "n.large",
+mu.Z.min.0="-n.large", gamma.mu.Z.min.Fz="dt", gamma.mu.Z.min.D="dt",
+sigma.Z.min.0=0.0, gamma.sigma.Z.min.Fz=0.0, gamma.sigma.Z.min.D=0.0,
+Z.max= "n.large",
 n.large=1e04,
-inits, n.chains=1, n.adapt=1000, quiet=TRUE,
-n.iter=10000, thin=1,
-print.summary=TRUE,
-export=FALSE, export.mcmc="", export.jags=""
-){
+inits, n.chains=1, n.adapt=1e03, quiet=TRUE,
+n.iter=1e04, thin=1,
+print.summary=TRUE, print.diagnostic=TRUE,
+export=FALSE, export.mcmc="", export.jags="",
+X.monitored=FALSE, export.X="",
+XZ.monitored=FALSE, export.XZ="",
+Z.monitored=FALSE, export.Z="",
+Y.monitored=FALSE, export.Y="",
+YZ.monitored=FALSE, export.YZ=""){
 	
 	# ====================== consistency checks ========================
 	#===================================================================
@@ -44,7 +50,7 @@ export=FALSE, export.mcmc="", export.jags=""
 	}
 	
 	# =================== delta.x =========================
-	if(is.na(match("delta.x",names.arg))  || length(which(delta.x==0))==n.data   ){
+	if(is.na(match("delta.x",names.arg))  || length(which(delta.x==0))==n.data ){
 		delta.x.logical <- FALSE
 	} 
 	else if (length(delta.x)!=n.data && length(delta.x)>0){stop("x and delta.x of inequal lengths: computation suppressed")}
@@ -54,6 +60,11 @@ export=FALSE, export.mcmc="", export.jags=""
 		delta.x.logical <- TRUE
 		}
 	else{delta.x.logical <- TRUE}
+	
+	if(!delta.x.logical && X.monitored && !anyNA(x)){
+		warning("x without uncertainties: x and X identified")
+		X.monitored=FALSE
+		}
 	
 	# =================== delta.y =========================
 	if(is.na(match("delta.y",names.arg))  || length(which(delta.y==0))==n.data){
@@ -67,14 +78,19 @@ export=FALSE, export.mcmc="", export.jags=""
 		}
 	else{delta.y.logical <- TRUE}
 	
+	if(!delta.y.logical && Y.monitored && !anyNA(y)){
+		warning("y without uncertainties: y and Y identified")
+		Y.monitored=FALSE
+		}
+	
 	# ===================== rho.xy =============================
-	rho.max<-0.995
+#	rho.max<-0.999
 	if(delta.x.logical && delta.y.logical){
 		if(is.na(match("covariance.xy",names.arg))){rho.xy <- rep(0.0,n.data)}
 		else{
 			if (length(covariance.xy)!=n.data) {stop("x and covariance.xy of inequal lengths: computation suppressed")}
 			rho.xy<-covariance.xy/delta.x/delta.y
-			if (max(rho.xy)>=rho.max || min(rho.xy)<=-rho.max) {stop("correlation factors out of range -1<=rho.xy<=1: computation suppressed")}
+			if (max(rho.xy)>=1 || min(rho.xy)<=-1) {stop("correlation factors out of range -1<=rho.xy<=1: computation suppressed")}
 		}
 	}
 	else{
@@ -89,6 +105,13 @@ export=FALSE, export.mcmc="", export.jags=""
 	}
 	else {y.threshold.logical <- FALSE}
 	
+	#===== x.threshold ==========
+	if(!is.na(match("x.threshold",names.arg)) ) {
+		if(length(x.threshold)<n.data){stop("x and x.threshold of inequal lengths: computation suppressed")}
+		x.threshold.logical <- TRUE
+	}
+	else {x.threshold.logical <- FALSE}
+	
 	#===== delta.y.threshold ==========
 	if(is.na(match("delta.y.threshold",names.arg))){
 		delta.y.threshold.logical <- FALSE
@@ -102,6 +125,22 @@ export=FALSE, export.mcmc="", export.jags=""
 		if(!y.threshold.logical){delta.y.threshold.logical <- FALSE; warning("delta.y.threshold cannot be used since y.threshold's are missing")}
 		if(length(which(delta.y.threshold==0))){delta.y.threshold.logical <- FALSE}
 	}
+	
+	#===== delta.x.threshold ==========
+	if(is.na(match("delta.x.threshold",names.arg))){
+		delta.x.threshold.logical <- FALSE
+	}
+	else{
+		delta.x.threshold.logical <- TRUE
+		if(length(delta.x.threshold)!=n.data){
+			stop("x and delta.x.threshold of inequal lengths: computation suppressed")
+			}
+		else{ifelse(delta.x.threshold==0, min(delta.min,delta.x.threshold[which(delta.x.threshold!=0)]), delta.x.threshold)}
+		if(!x.threshold.logical){delta.x.threshold.logical <- FALSE; warning("delta.x.threshold cannot be used since x.threshold's are missing")}
+		if(length(which(delta.x.threshold==0))){delta.x.threshold.logical <- FALSE}
+	}
+
+
 
 	#=========JAGS master script ======================================================
 	ScriptJAGS.input <- "#= JAGS script
@@ -118,41 +157,48 @@ y[n.data]
 # }
 
 model {
-#============== P(x,y|X,Z) ========================
+#============== P(x,y|X,Y) ========================
 for	(i in 1:n.data)	{
 
-x[i]                 ~  dnorm(X[i], prec.delta.x[i])                # default_if
+x[i]                 ~  dnorm(X[i], prec.delta.x[i])                                      # default_if
 mean.yIx[i]          <- Y[i]+rho.xy[i]*(x[i]-X[i])*sqrt(prec.delta.x[i]/prec.delta.y[i])  # default_if
-prec.delta.yIx[i]    <- min( prec.delta.y[i]/(1.0-rho.xy[i]^2), n.large)    # default_if
-y[i]                 ~  dnorm(Y[i], prec.delta.y[i])    # default_if
-# (if_delta.x!=0) #   x[i]                 ~  dnorm(X[i], prec.delta.x[i])
-# (if_delta.x!=0) #   # (if_delta.y!=0) #   mean.yIx[i]       <- Y[i]+rho.xy[i]*(x[i]-X[i])*sqrt(prec.delta.x[i]/prec.delta.y[i])
-# (if_delta.x!=0) #   # (if_delta.y!=0) #   prec.delta.yIx[i] <- prec.delta.y[i]/(1.0-rho.xy[i]^2)
+prec.delta.yIx[i]    <- min( prec.delta.y[i]/(1.0-rho.xy[i]^2), n.large)                  # default_if
+y[i]                 ~  dnorm(Y[i], prec.delta.y[i])                                      # default_if
+# (if_delta.x!=0) #                               x[i]              ~  dnorm(X[i], prec.delta.x[i])
+# (if_delta.x!=0) #   # (if_delta.y!=0) #         mean.yIx[i]       <- Y[i]+rho.xy[i]*(x[i]-X[i])*sqrt(prec.delta.x[i]/prec.delta.y[i])
+# (if_delta.x!=0) #   # (if_delta.y!=0) #         prec.delta.yIx[i] <- prec.delta.y[i]/(1.0-rho.xy[i]^2)
 # # # # (if_delta.x!=0) #   # (if_delta.y!=0) #   prec.delta.yIx[i] <- min( prec.delta.y[i]/(1.0-rho.xy[i]^2), n.large)
-# (if_delta.x!=0) #   # (if_delta.y!=0) #   y[i]              ~  dnorm(mean.yIx[i],prec.delta.yIx[i])
-# (if_delta.x==0) #   # (if_delta.y!=0) #   y[i]              ~  dnorm(Y[i],prec.delta.y[i])
+# (if_delta.x!=0) #   # (if_delta.y!=0) #         y[i]              ~  dnorm(mean.yIx[i],prec.delta.yIx[i])
+# (if_delta.x==0) #   # (if_delta.y!=0) #         y[i]              ~  dnorm(Y[i],prec.delta.y[i])
 
 #=
 #=============== Malmquist bias======================
 
 # MB as a step function -- y[i]~dnorm(mean.yIx[i],prec.delta.yIx[i])T(y.min[i],) -- , or MB as 0.5(1-erf(y)) if threshold has uncertainty
-# (if_delta.y!=0) #   # (if_delta.y.threshold=={}) #	y.min[i]	<-	y.threshold[i]	
-# (if_delta.y.threshold!={}) #	y.min[i]	~	dnorm(y.threshold[i],delta.y.threshold[i]^(-2))	
+# (if_delta.y!=0) #   # (if_delta.y.threshold=={}) #	y.min[i]  <-  y.threshold[i]	
+# (if_delta.y.threshold!={}) #	                        y.min[i]  ~   dnorm(y.threshold[i],delta.y.threshold[i]^(-2))	
 
-# (if_delta.y!=0) #   # (if_y.threshold!={}) #  Y.min[i]  ~  dnorm(y.min[i],prec.delta.y[i])
-# (if_delta.y==0) #   # (if_y.threshold!={}) #  Y.min[i]  <- y.threshold[i]
+# (if_delta.y!=0) #   # (if_y.threshold!={}) #          Y.min[i]  ~  dnorm(y.min[i],prec.delta.y[i])
+# (if_delta.y==0) #   # (if_y.threshold!={}) #          Y.min[i]  <- y.threshold[i]
+
+# (if_delta.x!=0) #   # (if_delta.x.threshold=={}) #	x.min[i]  <-  x.threshold[i]	
+# (if_delta.x.threshold!={}) #	                        x.min[i]  ~   dnorm(x.threshold[i],delta.x.threshold[i]^(-2))	
+
+# (if_delta.x!=0) #  # (if_sigma.XIZ.0!=0) # # (if_x.threshold!={}) #          X.min[i]  ~  dnorm(x.min[i],prec.delta.x[i])
+# (if_delta.x==0) #  # (if_sigma.XIZ.0!=0) # # (if_x.threshold!={}) #          X.min[i]  <- x.threshold[i]
+
 
 #=
 #=============== X-Z scaling  ===================
 
-fXZ[i]               <- alpha.XIZ+beta.XIZ*Z[i]+gamma.XIZ*T[i]+delta.XIZ*T[i]*Z[i] # default_if
-X[i]	                ~  dnorm(fXZ[i],prec.sigma.XIZ.z[i])            # default_if
+fXZ[i]              <- alpha.XIZ+beta.XIZ*Z[i]+gamma.XIZ*T[i]+delta.XIZ*T[i]*Z[i]                        # default_if
+X[i]	            ~  dnorm(fXZ[i],prec.sigma.XIZ.z[i])                                                 # default_if
 prec.sigma.XIZ.z[i]	<- prec.sigma.XIZ.0*(Fz[i]^-(2.*gamma.sigma.XIZ.Fz))*(D[i]^(-2.*gamma.sigma.XIZ.D))  # default_if
 
-# (if_sigma.XIZ.0!=0) # fXZ[i]          <-  alpha.XIZ+beta.XIZ*Z[i] *flag.z* +gamma.XIZ*T[i] *flag.delta.XIZ* +delta.XIZ*T[i]*Z[i]  
-# (if_sigma.XIZ.0!=0) # X[i]	        ~	dnorm(fXZ[i],prec.sigma.XIZ.z[i])
-# (if_sigma.XIZ.0!=0) # prec.sigma.XIZ.z[i]	<- prec.sigma.XIZ.0 *flag.z* *(Fz[i]^-(2.*gamma.sigma.XIZ.Fz))*(D[i]^(-2.*gamma.sigma.XIZ.D))
-# (if_delta.x!=0) #   # (if_sigma.XIZ.0==0) #	X[i]            <-  alpha.XIZ+beta.XIZ*Z[i] *flag.z* +gamma.XIZ*T[i] *flag.delta.XIZ* +delta.XIZ*T[i]*Z[i] 
+# (if_sigma.XIZ.0!=0) #                         fXZ[i]              <-  alpha.XIZ+beta.XIZ*Z[i] *flag.z* +gamma.XIZ*T[i] *flag.delta.XIZ* +delta.XIZ*T[i]*Z[i]  
+# (if_sigma.XIZ.0!=0) #                         X[i]	            ~	dnorm(fXZ[i],prec.sigma.XIZ.z[i])
+# (if_sigma.XIZ.0!=0) #                         prec.sigma.XIZ.z[i]	<-  prec.sigma.XIZ.0 *flag.z* *(Fz[i]^-(2.*gamma.sigma.XIZ.Fz))*(D[i]^(-2.*gamma.sigma.XIZ.D))
+# (if_delta.x!=0) #   # (if_sigma.XIZ.0==0) #	X[i]                <-  alpha.XIZ+beta.XIZ*Z[i] *flag.z* +gamma.XIZ*T[i] *flag.delta.XIZ* +delta.XIZ*T[i]*Z[i] 
 
 #=
 #=============== Y-Z scaling  ===================
@@ -183,19 +229,26 @@ Y[i]  ~ dnorm(fYZ[i], prec.sigma.YIZ.z[i])         # default_if
 #=
 #=================== p(Z) =================================
 Z[i]              ~  dnorm(mu.Z.z[i],prec.sigma.Z.z[i])		 # default_if 
-# Z[i]            ~  dnorm(mu.Z.z[i],prec.sigma.Z.z[i]) T(Z.min,Z.max)   #   Truncated normal distribution  
-mu.Z.z[i]	         <- mu.Z.0+gamma.mu.Z.D*logD[i]+gamma.mu.Z.Fz*T[i]		# default_if 
+# Z[i]            ~  dnorm(mu.Z.z[i],prec.sigma.Z.z[i]) T(Z.min.z[i],Z.max)   #   Truncated normal distribution  
+mu.Z.z[i]	      <- mu.Z.0+gamma.mu.Z.D*logD[i]+gamma.mu.Z.Fz*T[i]		# default_if 
 prec.sigma.Z.z[i] <- prec.sigma.Z.0*(Fz[i]^(-2.0*gamma.sigma.Z.Fz))*(D[i]^(-2.0*gamma.sigma.Z.D)) # default_if 
 
 # (if_n.mixture==1) # Z[i]                ~	  dnorm(mu.Z.z[i],prec.sigma.Z.z[i])
-# (if_n.mixture==1) # mu.Z.z[i]           <-	mu.Z.0 *flag.z* +gamma.mu.Z.D*logD[i]+gamma.mu.Z.Fz*T[i]		
-# (if_n.mixture==1) # prec.sigma.Z.z[i]   <-	prec.sigma.Z.0 *flag.z* *(Fz[i]^(-2.0*gamma.sigma.Z.Fz))*(D[i]^(-2.0*gamma.sigma.Z.D))
+# (if_n.mixture==1) # mu.Z.z[i]           <-  mu.Z.0 *flag.z* +gamma.mu.Z.D*logD[i]+gamma.mu.Z.Fz*T[i]		
+# (if_n.mixture==1) # prec.sigma.Z.z[i]   <-  prec.sigma.Z.0 *flag.z* *(Fz[i]^(-2.0*gamma.sigma.Z.Fz))*(D[i]^(-2.0*gamma.sigma.Z.D))
 
-# (if_n.mixture>1) # Z[i]				 ~	dnormmix(mu.Z.mixture.z[i,], prec.sigma.Z.mixture.z[i,], pi)	
-# (if_n.mixture>1) # for	(j	in	1:n.mixture)	{
-# (if_n.mixture>1) # mu.Z.mixture.z[i,j]			     <- mu.Z.0.mixture[j] *flag.z* +gamma.mu.Z.D*logD[i]+gamma.mu.Z.Fz*T[i]
-# (if_n.mixture>1) # prec.sigma.Z.mixture.z[i,j]   <- prec.sigma.Z.0.mixture[j] *flag.z* *(Fz[i]^(-2.0*gamma.sigma.Z.Fz))*(D[i]^(-2.0*gamma.sigma.Z.D))
-# (if_n.mixture>1) # }
+# (if_n.mixture>1) # Z[i]				  ~	  dnormmix(mu.Z.mixture.z[i,], prec.sigma.Z.mixture.z[i,], pi)	
+# (if_n.mixture>1) # for (j in 1:n.mixture) {
+# (if_n.mixture>1) #     mu.Z.mixture.z[i,j]          <- mu.Z.0.mixture[j] *flag.z* +gamma.mu.Z.D*logD[i]+gamma.mu.Z.Fz*T[i]
+# (if_n.mixture>1) #     prec.sigma.Z.mixture.z[i,j]  <- prec.sigma.Z.0.mixture[j] *flag.z* *(Fz[i]^(-2.0*gamma.sigma.Z.Fz))*(D[i]^(-2.0*gamma.sigma.Z.D))
+# (if_n.mixture>1) #     }
+
+# (if_mu.Z.min.0!=-n.large) # # (if_sigma.Z.min.0!=0) #  Z.min.z[i]              ~  dnorm(mu.Z.min.z[i],prec.sigma.Z.min.z[i])
+# (if_mu.Z.min.0!=-n.large) # # (if_sigma.Z.min.0!=0) #  mu.Z.min.z[i]           <- mu.Z.min.0 *flag.z* +gamma.mu.Z.min.D*logD[i]+gamma.mu.Z.min.Fz*T[i]
+# (if_mu.Z.min.0!=-n.large) # # (if_sigma.Z.min.0!=0) #  prec.sigma.Z.min.z[i]   <- prec.sigma.Z.min.0 *flag.z* *(Fz[i]^(-2.0*gamma.sigma.Z.min.Fz))*(D[i]^(-2.0*gamma.sigma.Z.min.D))
+
+# (if_mu.Z.min.0!=-n.large) # # (if_sigma.Z.min.0==0) #  Z.min.z[i]              <- mu.Z.min.0 *flag.z* +gamma.mu.Z.min.D*logD[i]+gamma.mu.Z.min.Fz*T[i]
+
 
 }
 
@@ -254,20 +307,31 @@ rho.XYIZ.0        <- 0.0  # default_if
 
 # (if_n.mixture>1) # mu.Z.0.mixture[1]         <- mu.Z.0
 # (if_n.mixture>1) # prec.sigma.Z.0.mixture[1] <- prec.sigma.Z.0
-# (if_n.mixture>1) # for(j in 2:n.mixture)	{
-# (if_n.mixture>1) #              mu.Z.0.mixture[j]         ~  dunif(-n.large,n.large)
-# (if_n.mixture>1) # 		      prec.sigma.Z.0.mixture[j] ~  dgamma(1.0/n.large,1.0/n.large)
-# (if_n.mixture>1) # 		      sigma.Z.0.mixture[j]      <- 1.0/sqrt(prec.sigma.Z.0.mixture[j])
-# (if_n.mixture>1) # 						}
+# (if_n.mixture>1) # for(j in 2:n.mixture) {
+# (if_n.mixture>1) #     mu.Z.0.mixture[j]         ~  dunif(-n.large,n.large)
+# (if_n.mixture>1) #     prec.sigma.Z.0.mixture[j] ~  dgamma(1.0/n.large,1.0/n.large)
+# (if_n.mixture>1) #     sigma.Z.0.mixture[j]      <- 1.0/sqrt(prec.sigma.Z.0.mixture[j])
+# (if_n.mixture>1) #     }
 
 mu.Z.0	~	dunif(-n.large,n.large)
 *flag.z* gamma.mu.Z.Fz ~  dt(0,1,1)
 *flag.z* gamma.mu.Z.D  ~  dt(0,1,1)
 
-prec.sigma.Z.0	~  dgamma(1.0/n.large,1.0/n.large) 
+prec.sigma.Z.0  ~  dgamma(1.0/n.large,1.0/n.large) 
 sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 *flag.z* gamma.sigma.Z.Fz	~	dt(0,1,1)
 *flag.z* gamma.sigma.Z.D	<-  0.0
+#=
+# (if_mu.Z.min.0!=-n.large) #    mu.Z.min.0 ~ dunif(-n.large,n.large)
+# (if_mu.Z.min.0!=-n.large) #    *flag.z* gamma.mu.Z.min.Fz ~  dt(0,1,1)
+# (if_mu.Z.min.0!=-n.large) #    *flag.z* gamma.mu.Z.min.D  ~  dt(0,1,1)
+#=
+# (if_sigma.Z.min.0!=0) #       prec.sigma.Z.min.0 ~  dgamma(1.0/n.large,1.0/n.large)
+# (if_sigma.Z.min.0!=0) #       sigma.Z.min.0      <- 1.0/sqrt(prec.sigma.Z.min.0)
+# (if_sigma.Z.min.0!=0) #       *flag.z* gamma.sigma.Z.min.Fz	~	dt(0,1,1)
+# (if_sigma.Z.min.0!=0) #       *flag.z* gamma.sigma.Z.min.D	<-  0.0
+# (if_sigma.Z.min.0==0) #       sigma.Z.min.0      <- 0.0
+
 }"
 
 
@@ -288,7 +352,9 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 	"rho.XYIZ.0", "gamma.rho.XYIZ.Fz", "gamma.rho.XYIZ.D",
 	"Z.knee", "l.knee", "beta.YIZ.knee", "delta.YIZ.knee", "sigma.YIZ.0.knee",
 	"pi[1]","mu.Z.0",  "gamma.mu.Z.Fz", "gamma.mu.Z.D",
-	"sigma.Z.0", "gamma.sigma.Z.Fz", "gamma.sigma.Z.D")
+	"sigma.Z.0", "gamma.sigma.Z.Fz", "gamma.sigma.Z.D",
+	"mu.Z.min.0","gamma.mu.Z.min.Fz", "gamma.mu.Z.min.D",
+	"sigma.Z.min.0", "gamma.sigma.Z.min.Fz", "gamma.sigma.Z.min.D")
 	ParStringJAGSList <- c("alpha.YIZ", "beta.YIZ", "sigma.YIZ.0","pi[1]","mu.Z.0", "sigma.Z.0")
 	
 	if(n.mixture>1){
@@ -331,7 +397,7 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 		}
 		
 		if  (prior == "dt") {
-				prior.string  <- c(par,"~","dt(0,1,1)")
+				prior.string  <- c(par,"~","dt(0.0,1.0,1.0)")
 				ParStringJAGSList <- c(ParStringJAGSList,par)
 			}
 		else if (prior == "dunif"){
@@ -382,10 +448,14 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 		fPriorScriptJAGS("gamma.sigma.Z.Fz", gamma.sigma.Z.Fz)
 		fPriorScriptJAGS("gamma.mu.Z.D", gamma.mu.Z.D)
 		fPriorScriptJAGS("gamma.mu.Z.Fz", gamma.mu.Z.Fz) 
+		fPriorScriptJAGS("gamma.mu.Z.min.Fz", gamma.mu.Z.min.Fz)
+		fPriorScriptJAGS("gamma.mu.Z.min.D", gamma.mu.Z.min.D)
+		fPriorScriptJAGS("gamma.sigma.Z.min.Fz",gamma.sigma.Z.min.Fz)
+		fPriorScriptJAGS("gamma.sigma.Z.min.D", gamma.sigma.Z.min.D)
     
 		switch(match.arg(distance),
-		       angular={gamma.Dist<-0},
-		       luminosity={gamma.Dist<-2}
+		       "angular"={gamma.Dist<-0},
+		       "luminosity"={gamma.Dist<-2}
 		)
 		ind.flag.delta.YIZ<-which(ScriptJAGS=="*flag.delta.YIZ*",arr.ind=TRUE)
 		if(delta.YIZ!=0){
@@ -429,9 +499,10 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 		for (Ind in 1:nrow(ind.flag.delta.XIZ) ) { ScriptJAGS[ind.flag.delta.XIZ[Ind,1],ind.flag.delta.XIZ[Ind,2]:n.col.max] <-""}
 		mcmc.all$"gamma.YIZ" <- 0.0; mcmc.all$"delta.YIZ" <- 0.0; mcmc.all$"delta.YIZ.knee" <- 0.0; mcmc.all$"gamma.XIZ" <- 0.0;  mcmc.all$"delta.XIZ" <- 0.0;
 		mcmc.all$"gamma.sigma.YIZ.D" <- 0.0; mcmc.all$"gamma.sigma.YIZ.Fz" <- 0.0; mcmc.all$"gamma.sigma.XIZ.D" <- 0.0; mcmc.all$"gamma.sigma.XIZ.Fz" <- 0.0; 
-		mcmc.all$"gamma.sigma.Z.D" <- 0.0;
 		mcmc.all$"gamma.rho.XYIZ.Fz" <- 0.0; mcmc.all$"gamma.rho.XYIZ.D" <- 0.0;
-		mcmc.all$"gamma.sigma.Z.Fz" <- 0.0; mcmc.all$"gamma.mu.Z.D" <- 0.0; mcmc.all$"gamma.mu.Z.Fz" <- 0.0;
+		mcmc.all$"gamma.sigma.Z.D" <- 0.0; mcmc.all$"gamma.sigma.Z.Fz" <- 0.0; mcmc.all$"gamma.mu.Z.D" <- 0.0; mcmc.all$"gamma.mu.Z.Fz" <- 0.0;
+		mcmc.all$"gamma.sigma.Z.min.D" <- 0.0; mcmc.all$"gamma.sigma.Z.min.Fz" <- 0.0; 
+		mcmc.all$"gamma.mu.Z.min.D" <- 0.0; mcmc.all$"gamma.mu.Z.min.Fz" <- 0.0;
     }
     
     #================== priors =================================================
@@ -524,6 +595,10 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 			warning("x rescaled to x=Z")
 			fPriorScriptJAGS("alpha.XIZ", 0.0); fPriorScriptJAGS("beta.XIZ", 1.0); fPriorScriptJAGS("gamma.XIZ", 0.0); fPriorScriptJAGS("delta.XIZ", 0.0)
 			}
+			if(Z.monitored && !anyNA(x)){
+				warning("x without uncertainties and X not scattered: x and Z identified")
+				Z.monitored=FALSE
+				}
 			}
 		fIfScriptJAGS("(if_sigma.XIZ.0==0)") 
 		fIfScriptJAGS("(if_rho.XYIZ==0)")
@@ -538,8 +613,8 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
    # =========== Mixture =============================================
    if (n.mixture > 1){
    	   data.jags <- c(data.jags,list('n.mixture' = n.mixture,'alpha.dirch' = rep(1.0,n.mixture)))
-   	   if (Z.min!="-n.large"){warning("JAGS distribution dnormmix cannot be truncate. Z.min superseded"); Z.min<-"-n.large"}
-   	   if (Z.max!="n.large"){warning("JAGS distribution dnormmix cannot be truncate. Z.max superseded"); Z.max<-"n.large"}
+   	   if (Z.min!="-n.large"){warning("JAGS distribution dnormmix cannot be truncated. Z.min superseded"); Z.min<-"-n.large"}
+   	   if (Z.max!="n.large"){warning("JAGS distribution dnormmix cannot be truncated. Z.max superseded"); Z.max<-"n.large"}
    	   fIfScriptJAGS("(if_n.mixture>1)")
    	   fPriorScriptJAGS("mu.Z.0.mixture[j]", mu.Z.0.mixture)
    	   ParStringJAGSList <- ParStringJAGSList[ParStringJAGSList != "mu.Z.0.mixture[j]"]
@@ -554,10 +629,36 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 	}
 		
 	# =========== Truncated p(Z) distribution =============================================
-	if ( Z.min != "-n.large" || Z.max != "n.large") {
-		fAppendScriptJAGS("Z[i]",paste0("T(",toString(Z.min), ",", toString(Z.max), ")"))		
-		fPriorScriptJAGS("mu.Z.0", paste0("dunif(",toString(Z.min),",",toString(Z.max),")",sep="") )  
+	mcmc.all$"mu.Z.min.0" <- -n.large
+	mcmc.all$"gamma.mu.Z.min.D" <- 0.0
+	mcmc.all$"gamma.mu.Z.min.Fz" <- 0.0
+	mcmc.all$"sigma.Z.min.0" <- 0.0
+	mcmc.all$"gamma.sigma.Z.min.D" <- 0.0
+	mcmc.all$"gamma.sigma.Z.min.Fz" <- 0.0
+		
+	if (mu.Z.min.0 != "-n.large" || Z.max != "n.large") {
+		fAppendScriptJAGS("Z[i]",paste0("T( Z.min.z[i], ", toString(Z.max), ")"))
+		}
+			
+	if (mu.Z.min.0 != "-n.large") {
+		fIfScriptJAGS("(if_mu.Z.min.0!=-n.large)")
+		fPriorScriptJAGS("mu.Z.min.0", mu.Z.min.0)
+		if(sigma.Z.min.0!=0){
+			fIfScriptJAGS("(if_sigma.Z.min.0!=0)");
+			fPriorScriptJAGS("sigma.Z.min.0", sigma.Z.min.0)
+			}
+		else {fIfScriptJAGS("(if_sigma.Z.min.0==0)")}
 	}
+	else {
+		ParStringJAGSList <- ParStringJAGSList[ParStringJAGSList != "gamma.mu.Z.min.D"]
+		ParStringJAGSList <- ParStringJAGSList[ParStringJAGSList != "gamma.mu.Z.min.Fz"]
+	}
+	
+		
+		#if (is.na(match(mu.Z.0,names.arg)) || mu.Z.0=="dunif") {fPriorScriptJAGS("mu.Z.0", paste0("dunif(",toString(Z.min),",",toString(Z.max),")",sep="") ) } 
+		#else if (class(mu.Z.0)!="numeric" && !is.na(match(mu.Z.0,names.arg)) )
+		#{fAppendScriptJAGS("mu.Z.0",paste0("T(",toString(Z.min), ",", toString(Z.max), ")"))}
+	
 
 	# ============== Malmquist bias =============================================
 	if (y.threshold.logical)  {
@@ -573,8 +674,23 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 			fIfScriptJAGS("(if_delta.y.threshold!={})")
 		}
 	}     
-        
-        
+    
+    # ============== Malmquist bias in X ===========================================
+	if (x.threshold.logical)  {
+		fIfScriptJAGS("(if_x.threshold!={})")
+		fAppendScriptJAGS("x[i]","T(x.min[i],)")
+		if (sigma.XIZ.0 != 0.0){ fAppendScriptJAGS("X[i]","T(X.min[i],)")}
+		if (!delta.x.threshold.logical){
+			data.jags<-c(data.jags,list('x.threshold'=x.threshold))
+			fIfScriptJAGS("(if_delta.x.threshold=={})")
+		}
+		else if (delta.x.threshold.logical){
+			data.jags<-c(data.jags,list('x.threshold'=x.threshold, 'delta.x.threshold'=delta.x.threshold))
+			fIfScriptJAGS("(if_delta.x.threshold!={})")
+		}
+	}     
+
+    
     #==================== export JAGS Script============================
     ScriptJAGS[1,4]<-paste0("created with lira on ",date(),sep="")
     ScriptJAGS[which(ScriptJAGS=="default_if",arr.ind = TRUE)[,1], ]<-rep("",n.col.max)
@@ -590,13 +706,24 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 	
 	ScriptJAGSText <- paste( apply(ScriptJAGS[IndRowList,], 1, paste, collapse = " "), collapse="\n")
 	
-	#write.table(ScriptJAGS[IndRowList,],file = "/Users/maurosereno/Documents/calcoli/JAGS/lira_check.jags", quote = FALSE,row.names = FALSE,col.names = FALSE)
+	#======= check =====================================
+#	write.table(ScriptJAGS[IndRowList,],file = "/Users/maurosereno/Documents/calcoli/R_JAGS/tmp/lira_check.jags", quote = FALSE,row.names = FALSE,col.names = FALSE)
 	
 	#================rjags====================================
 	#========================================================
 	
-	ParStringJAGSList<-sort(ParStringJAGSList[which(!duplicated(ParStringJAGSList))])
+	ParStringJAGSListScaling <- sort(ParStringJAGSList[which(!duplicated(ParStringJAGSList))])
 		
+	if(Z.monitored) { ParStringJAGSList <- c(ParStringJAGSList, paste0("Z[", 1:n.data,"]") ) }
+	if(X.monitored) { ParStringJAGSList <- c(ParStringJAGSList, paste0("X[", 1:n.data,"]") ) }
+	if(XZ.monitored){ ParStringJAGSList <- c(ParStringJAGSList, paste0("fXZ[", 1:n.data,"]") ) }
+	if(Y.monitored) { ParStringJAGSList <- c(ParStringJAGSList, paste0("Y[", 1:n.data,"]") ) }
+    if(YZ.monitored){ ParStringJAGSList <- c(ParStringJAGSList, paste0("fYZ[", 1:n.data,"]") ) }
+
+
+	ParStringJAGSList <- sort(ParStringJAGSList[which(!duplicated(ParStringJAGSList))])
+	                 
+	                 	
 	#=========== chains ======================================
 	
 	load.module("mix")
@@ -609,7 +736,21 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 	mcmc.jags <- as.data.frame(mcmc.samples[[1]])
 	if(n.chains>1){for (Ind in 2:n.chains){mcmc.jags<-rbind(mcmc.jags,as.data.frame(mcmc.samples[[Ind]]))} }
 	
-	for (par in ParStringJAGSList){mcmc.all[[which(ParStringAllList==par)]]<-mcmc.jags[[which(colnames(mcmc.jags)==par)]] }
+	
+	mcmc.X <- NULL
+	if(X.monitored){mcmc.X <- mcmc.jags[,paste0("X[", 1:n.data,"]")]}
+	mcmc.Z <- NULL
+	if(Z.monitored){mcmc.Z <- mcmc.jags[,paste0("Z[", 1:n.data,"]")]}
+	mcmc.Y <- NULL
+	if(Y.monitored){mcmc.Y <- mcmc.jags[,paste0("Y[", 1:n.data,"]")]}
+	mcmc.YZ <- NULL
+	if(YZ.monitored){mcmc.YZ <- mcmc.jags[,paste0("fYZ[", 1:n.data,"]")]}
+	mcmc.XZ <- NULL
+	if(XZ.monitored){mcmc.XZ <- mcmc.jags[,paste0("fXZ[", 1:n.data,"]")]}
+	
+#	write.table(mcmc.X, file = "/Users/maurosereno/Documents/calcoli/JAGS/mcmc_X.jags", quote = FALSE,row.names = FALSE,col.names = FALSE)
+	
+	for (par in ParStringJAGSListScaling){mcmc.all[[which(ParStringAllList==par)]] <- mcmc.jags[[which(colnames(mcmc.jags)==par)]] }
 	
 	if (beta.YIZ.knee == "beta.YIZ"){
 		mcmc.all$Z.knee <- 0.0
@@ -625,24 +766,55 @@ sigma.Z.0       <- 1.0/sqrt(prec.sigma.Z.0)
 	
 	if(export){
 		if(export.jags==""){
-			warning("JAGS script saved as \"lira.jags\" in the working directory")
+			warning("No file name specified: JAGS script saved as \"lira.jags\" in the working directory")
 			export.jags<-paste0(getwd(),"/lira.jags",sep = "")
 			}
 		if(export.mcmc==""){
-			warning("Merged MCM chains saved as \"mcmc_all.dat\" in the working directory")
-			export.jags<-paste0(getwd(),"/mcmc_all.dat")
+			warning("No file name specified for merged chains: regression parameters saved as \"mcmc_all.dat\" in the working directory")
+			export.mcmc<-paste0(getwd(),"/mcmc_all.dat")
 			}
+		if(X.monitored){
+			if(export.X==""){
+				warning("no file name specified for merged chains: no export of the X variables")
+				#warning("X merged chains saved as \"mcmc_X.dat\" in the working directory")
+				#export.X<-paste0(getwd(),"/mcmc_X.dat")
+				}
+			else {write.table(mcmc.X,file=export.X, sep="\t",row.names=FALSE, col.names=TRUE)}
+		}
+		if(Z.monitored){
+			if(export.Z==""){
+				warning("no file name specified for merged chains: no export of the Z variables")}
+			else {write.table(mcmc.Z,file=export.Z, sep="\t",row.names=FALSE, col.names=TRUE)}
+		}
+		if(YZ.monitored){
+			if(export.YZ==""){
+				warning("no file name specified for merged chains: no export of the YZ variables")}
+			else {write.table(mcmc.YZ,file=export.YZ, sep="\t",row.names=FALSE, col.names=TRUE)}
+		}
+		if(XZ.monitored){
+			if(export.XZ==""){
+				warning("no file name specified for merged chains: no export of the XZ variables")}
+			else {write.table(mcmc.XZ,file=export.XZ, sep="\t",row.names=FALSE, col.names=TRUE)}
+		}
+		if(Y.monitored){
+			if(export.Y==""){
+				warning("no file name specified for merged chains: no export of the Y variables")}
+			else {write.table(mcmc.Y,file=export.Y, sep="\t",row.names=FALSE, col.names=TRUE)}
+		}
 		write.table(mcmc.all,file=export.mcmc, sep="\t",row.names=FALSE, col.names=TRUE)
 		write.table(ScriptJAGS[IndRowList,],file = export.jags, quote = FALSE,row.names = FALSE,col.names = FALSE)
 		}
 	
 	if(print.summary){
 		print(summary(mcmc.samples))
+		}
+		
+	if(print.diagnostic){
 		if(n.chains>1){
 			print("Gelman and Rubin's convergence diagnostic")
 			print(gelman.diag(mcmc.samples))}
 		}
 	
-	return(list(mcmc.all,mcmc.samples))
+	return(list(list(mcmc.all, mcmc.Z, mcmc.X, mcmc.YZ, mcmc.Y), mcmc.samples))
 
 }
